@@ -28,6 +28,10 @@
   cursor: pointer;
 }
 
+.topbar.dark .hamburger-btn {
+  color: #fff;  /* white in dark mode */
+}
+
 /* Hide hamburger on desktop */
 @media (min-width: 1024px) {
   .hamburger-btn {

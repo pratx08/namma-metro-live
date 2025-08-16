@@ -116,6 +116,19 @@ export default function App() {
         : { purple: true, yellow: true, green: true }
     );
 
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (window.innerWidth < 1024) {
+        const navbarEl = document.querySelector("aside");
+        if (menuOpen && navbarEl && !navbarEl.contains(e.target)) {
+          setMenuOpen(false);
+        }
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [menuOpen]);
+  
   const mapCenter = useMemo(() => ({ lat: 12.97, lng: 77.59 }), []);
 
   const mapOptions = useMemo(
