@@ -55,6 +55,7 @@ export default function App() {
     );
 
   const mapCenter = useMemo(() => [ 77.60691661228209, 12.864834359992448], []);
+  const MAPTILER_KEY = "xlPHYNs3swcefiFlTNpo";
   const styleUrl = `https://api.maptiler.com/maps/streets-v2/style.json?key=${MAPTILER_KEY}`;
 
   return (
