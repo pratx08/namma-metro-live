@@ -72,30 +72,29 @@ export default function YellowLine({
     // ========== schedule-driven trains ==========
     if (animateTrains && N >= 2) {
       const DAY_MS = 24 * 60 * 60 * 1000;
-      const IST_OFFSET_MIN = 330;
+      const IST_OFFSET_MS = 330 * 60 * 1000;
+      const istNowMs = () => Date.now() + IST_OFFSET_MS;
 
       const hhmmssToMs = (t) => {
         const [hh, mm, ss] = t.split(":").map((x) => parseInt(x, 10));
         return ((hh * 60 + mm) * 60 + (ss || 0)) * 1000;
       };
 
-      // Correct IST timeline “now” (UTC epoch + IST offset)
-      const nowISTms = () => {
-        if (timeOfDayOverride) {
-          const base = istMidnightEpoch();
-          return base + hhmmssToMs(timeOfDayOverride);
-        }
-        return Date.now() + IST_OFFSET_MIN * 60 * 1000;
+      const istMidnightEpoch = () => {
+        const n = istNowMs();             // shift to IST
+        const d = new Date(n);
+        // IMPORTANT: use UTC getters here
+        const sinceMidnight =
+          ((d.getUTCHours() * 60 + d.getUTCMinutes()) * 60 + d.getUTCSeconds()) * 1000 +
+          d.getUTCMilliseconds();
+        return n - sinceMidnight;
       };
 
-      // Midnight of *today* in IST timeline (epoch shifted by IST)
-      const istMidnightEpoch = () => {
-        const n = Date.now() + IST_OFFSET_MIN * 60 * 1000; // IST timeline
-        const d = new Date(n);
-        const sinceMidnight =
-          ((d.getHours() * 60 + d.getMinutes()) * 60 + d.getSeconds()) * 1000 +
-          d.getMilliseconds();
-        return n - sinceMidnight;
+      // Correct IST timeline “now” (UTC epoch + IST offset)
+      const nowISTms = () => {
+        const base = istMidnightEpoch();
+        if (timeOfDayOverride) return base + hhmmssToMs(timeOfDayOverride);
+        return istNowMs();
       };
 
       // Build trips by stitching same (tripNo, trainId) across stations for UP/DOWN
@@ -162,6 +161,20 @@ export default function YellowLine({
 
       tripDefsRef.current = buildTrips();
 
+      // Debug: Log all trips to see what's being built
+      console.log(`Built ${tripDefsRef.current.length} trips:`, tripDefsRef.current.map(trip => ({
+        key: trip.key,
+        trainId: trip.trainId,
+        direction: trip.dir,
+        legs: trip.legs.length,
+        firstLeg: trip.legs[0] ? {
+          from: trip.legs[0].i1,
+          to: trip.legs[0].i2,
+          start: new Date(trip.legs[0].t1).toLocaleTimeString(),
+          end: new Date(trip.legs[0].t2).toLocaleTimeString()
+        } : null
+      })));
+
       const trainIcon = {
         url: "/yellow-metro.jpg",
         scaledSize: new g.Size(25, 25),
@@ -174,10 +187,21 @@ export default function YellowLine({
         lng: lerp(p1.lng, p2.lng, t),
       });
 
-      const ensureMarker = (key) => {
+      const ensureMarker = (key, trainId) => {
         let m = liveMarkersRef.current.get(key);
         if (!m) {
-          m = new g.Marker({ position: points[0], icon: trainIcon, map, zIndex: 50 });
+          m = new g.Marker({
+            position: points[0],
+            icon: trainIcon,
+            map,
+            zIndex: 50,
+            label: {
+              text: trainId,
+              fontSize: "10px",
+              color: "#000",
+              fontWeight: "bold",
+            },
+          });
           liveMarkersRef.current.set(key, m);
         } else if (!m.getMap()) {
           m.setMap(map);
@@ -203,39 +227,69 @@ export default function YellowLine({
           }
           if (idx === undefined) idx = first.i1; // safe fallback
         }
-        const marker = ensureMarker(trip.key);
+        const marker = ensureMarker(trip.key, trip.trainId);
         marker.setPosition(points[idx]);
       };
 
       const step = () => {
         const now = nowISTms();
 
+        // Debug: Log current time and active trips
+        if (tripDefsRef.current.length > 0) {
+          console.log(`Current IST time: ${new Date(now).toLocaleTimeString()}, Active trips: ${tripDefsRef.current.length}`);
+        }
+
         for (const trip of tripDefsRef.current) {
+          const firstLeg = trip.legs[0];
+          const lastLeg = trip.legs[trip.legs.length - 1];
+
+          // Out of service → hide marker if exists
+          if (now < firstLeg.t1 || now > lastLeg.t2) {
+            const marker = liveMarkersRef.current.get(trip.key);
+            if (marker) marker.setMap(null);
+            continue;
+          }
+
           let moved = false;
 
-          // moving on a leg?
+          // Check if currently moving on a leg
           for (let i = 0; i < trip.legs.length; i++) {
             const leg = trip.legs[i];
             if (now >= leg.t1 && now <= leg.t2) {
               const t = (now - leg.t1) / (leg.t2 - leg.t1);
               const p1 = points[leg.i1];
               const p2 = points[leg.i2];
-              ensureMarker(trip.key).setPosition(lerpPos(p1, p2, t));
+
+              // Debug
+              console.log(
+                `Train ${trip.trainId} moving on leg ${i + 1}/${trip.legs.length}, progress: ${(t * 100).toFixed(1)}%`
+              );
+
+              ensureMarker(trip.key, trip.trainId).setPosition(lerpPos(p1, p2, t));
               moved = true;
               break;
             }
           }
 
-          // idle (pre, between, or post service): show parked at the correct station
           if (!moved) {
-            placeIdle(trip, now);
+            // --- Train is in service but idle at a station ---
+            let idx = null;
+            for (let i = 0; i < trip.legs.length - 1; i++) {
+              if (now > trip.legs[i].t2 && now < trip.legs[i + 1].t1) {
+                idx = trip.legs[i].i2;
+                break;
+              }
+            }
+            if (idx === null) idx = firstLeg.i1; // fallback safe
+
+            ensureMarker(trip.key, trip.trainId).setPosition(points[idx]);
           }
         }
-
         rafRef.current = requestAnimationFrame(step);
       };
 
-      rafRef.current = requestAnimationFrame(step);
+      // Start the animation immediately to show current positions
+      step();
     }
 
     // ---------- cleanup ----------
@@ -244,7 +298,7 @@ export default function YellowLine({
       rafRef.current = null;
 
       for (const m of liveMarkersRef.current.values()) m.setMap(null);
-      liveMarkersRef.current.current = new Map(); // reset map holder
+      liveMarkersRef.current = new Map();
 
       markersRef.current.forEach((m) => m.setMap(null));
       markersRef.current = [];
