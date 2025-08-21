@@ -8,20 +8,23 @@ export default function YellowLine({
   showStations = true,
   fitOnMount = false,
   animateTrains = true,
+  // Optional: simulate IST time-of-day (e.g., "09:15:00") for testing
+  timeOfDayOverride,
 }) {
   const markersRef = useRef([]);
   const polylineRef = useRef(null);
 
-  const trainMarkersRef = useRef([]); // [A, B]
-  const trainStateRef = useRef(null);
   const rafRef = useRef(null);
+  const tripDefsRef = useRef([]);               // [{ key, dir, trainId, legs: [{i1,i2,t1,t2}] }]
+  const liveMarkersRef = useRef(new Map());     // key -> google.maps.Marker
 
   useEffect(() => {
     if (!map || !window.google) return;
     const g = window.google.maps;
     const isDark = theme === "dark";
 
-    const points = (YELLOW_STATIONS || []).filter(
+    // ---------- stations/points ----------
+    const stations = (YELLOW_STATIONS || []).filter(
       (s) =>
         s &&
         typeof s.lat === "number" &&
@@ -29,6 +32,7 @@ export default function YellowLine({
         typeof s.lng === "number" &&
         !Number.isNaN(s.lng)
     );
+    const points = stations.map(({ lat, lng }) => ({ lat, lng }));
     const N = points.length;
     if (N === 0) return;
 
@@ -38,7 +42,7 @@ export default function YellowLine({
       map.fitBounds(bounds, 40);
     }
 
-    // --- Station markers (dots only, no labels)
+    // ---------- station dots ----------
     const stationDot = {
       path: "M 0,0 m -5,0 a 5,5 0 1,0 10,0 a 5,5 0 1,0 -10,0",
       scale: 1,
@@ -53,7 +57,7 @@ export default function YellowLine({
       );
     }
 
-    // --- Polyline
+    // ---------- line ----------
     if (N >= 2) {
       polylineRef.current = new g.Polyline({
         path: points,
@@ -65,11 +69,98 @@ export default function YellowLine({
       });
     }
 
-    // ====== Trains (per-segment durations via toNextSec) ======
+    // ========== schedule-driven trains ==========
     if (animateTrains && N >= 2) {
-      const segDurMs = points.slice(0, N - 1).map((s) =>
-        Math.max(1, (s.toNextSec ?? 60) * 1000)
-      );
+      const DAY_MS = 24 * 60 * 60 * 1000;
+      const IST_OFFSET_MIN = 330;
+
+      const hhmmssToMs = (t) => {
+        const [hh, mm, ss] = t.split(":").map((x) => parseInt(x, 10));
+        return ((hh * 60 + mm) * 60 + (ss || 0)) * 1000;
+      };
+
+      // Correct IST timeline “now” (UTC epoch + IST offset)
+      const nowISTms = () => {
+        if (timeOfDayOverride) {
+          const base = istMidnightEpoch();
+          return base + hhmmssToMs(timeOfDayOverride);
+        }
+        return Date.now() + IST_OFFSET_MIN * 60 * 1000;
+      };
+
+      // Midnight of *today* in IST timeline (epoch shifted by IST)
+      const istMidnightEpoch = () => {
+        const n = Date.now() + IST_OFFSET_MIN * 60 * 1000; // IST timeline
+        const d = new Date(n);
+        const sinceMidnight =
+          ((d.getHours() * 60 + d.getMinutes()) * 60 + d.getSeconds()) * 1000 +
+          d.getMilliseconds();
+        return n - sinceMidnight;
+      };
+
+      // Build trips by stitching same (tripNo, trainId) across stations for UP/DOWN
+      const buildTrips = () => {
+        const upMap = new Map();   // key -> [{idx, time}]
+        const downMap = new Map(); // key -> [{idx, time}]
+
+        const dedupePush = (map, key, idx, time) => {
+          const arr = map.get(key) || [];
+          const sig = `${idx}|${time}`;
+          if (!arr.some((e) => `${e.idx}|${e.time}` === sig)) arr.push({ idx, time });
+          map.set(key, arr);
+        };
+
+        stations.forEach((st, idx) => {
+          (st.upSchedule || []).forEach((e) => {
+            const key = `UP_${e.tripNo}_${e.trainId}`;
+            dedupePush(upMap, key, idx, e.time);
+          });
+          (st.downSchedule || []).forEach((e) => {
+            const key = `DOWN_${e.tripNo}_${e.trainId}`;
+            dedupePush(downMap, key, idx, e.time);
+          });
+        });
+
+        const midnight = istMidnightEpoch();
+
+        const finalize = (map, dir) => {
+          const trips = [];
+          for (const [key, raw] of map.entries()) {
+            const ordered = raw
+              .slice()
+              .sort((a, b) => (dir === "UP" ? a.idx - b.idx : b.idx - a.idx));
+
+            let dayOffset = 0;
+            let prevWithin = null;
+            const events = ordered.map(({ idx, time }) => {
+              const within = hhmmssToMs(time);
+              if (prevWithin !== null && within < prevWithin) dayOffset += DAY_MS; // crosses midnight
+              const abs = midnight + dayOffset + within; // IST timeline absolute
+              prevWithin = within;
+              return { idx, abs };
+            });
+
+            if (events.length >= 2) {
+              const parts = key.split("_");
+              const trainId = parts.slice(2).join("_");
+              const legs = [];
+              for (let i = 0; i < events.length - 1; i++) {
+                const a = events[i];
+                const b = events[i + 1];
+                if (b.abs > a.abs) {
+                  legs.push({ i1: a.idx, i2: b.idx, t1: a.abs, t2: b.abs });
+                }
+              }
+              if (legs.length) trips.push({ key, dir, trainId, legs });
+            }
+          }
+          return trips;
+        };
+
+        return [...finalize(upMap, "UP"), ...finalize(downMap, "DOWN")];
+      };
+
+      tripDefsRef.current = buildTrips();
 
       const trainIcon = {
         url: "/yellow-metro.jpg",
@@ -77,71 +168,83 @@ export default function YellowLine({
         anchor: new g.Point(15, 20),
       };
 
-      const mkTrain = (pos) =>
-        new g.Marker({ position: pos, icon: trainIcon, map, zIndex: 50 });
-      const trainA = mkTrain(points[0]);     // forward
-      const trainB = mkTrain(points[N - 1]); // reverse
-      trainMarkersRef.current = [trainA, trainB];
-
       const lerp = (a, b, t) => a + (b - a) * t;
       const lerpPos = (p1, p2, t) => ({
         lat: lerp(p1.lat, p2.lat, t),
         lng: lerp(p1.lng, p2.lng, t),
       });
 
-      const t0 = performance.now();
-      trainStateRef.current = {
-        A: { dir: +1, segIndex: 0, phaseStart: t0 },
-        B: { dir: -1, segIndex: N - 2, phaseStart: t0 },
+      const ensureMarker = (key) => {
+        let m = liveMarkersRef.current.get(key);
+        if (!m) {
+          m = new g.Marker({ position: points[0], icon: trainIcon, map, zIndex: 50 });
+          liveMarkersRef.current.set(key, m);
+        } else if (!m.getMap()) {
+          m.setMap(map);
+        }
+        return m;
       };
 
-      const advanceTrain = (state, marker, now) => {
-        let { dir, segIndex, phaseStart } = state;
-
-        while (true) {
-          if (segIndex < 0 || segIndex >= segDurMs.length) {
-            dir = -dir;
-            segIndex = dir > 0 ? 0 : segDurMs.length - 1;
-            phaseStart = now;
+      const placeIdle = (trip, now) => {
+        const first = trip.legs[0];
+        const last = trip.legs[trip.legs.length - 1];
+        let idx;
+        if (now < first.t1) {
+          idx = first.i1; // not departed yet
+        } else if (now > last.t2) {
+          idx = last.i2; // finished; at terminal
+        } else {
+          // between legs exactly at a station
+          for (let i = 0; i < trip.legs.length - 1; i++) {
+            if (now > trip.legs[i].t2 && now < trip.legs[i + 1].t1) {
+              idx = trip.legs[i].i2;
+              break;
+            }
           }
-
-          const duration = segDurMs[segIndex] || 1;
-          const elapsed = now - phaseStart;
-
-          if (elapsed < duration) {
-            const i = segIndex;
-            const p1 = dir > 0 ? points[i] : points[i + 1];
-            const p2 = dir > 0 ? points[i + 1] : points[i];
-            const t = elapsed / duration;
-            marker.setPosition(lerpPos(p1, p2, t));
-            state.dir = dir;
-            state.segIndex = segIndex;
-            state.phaseStart = phaseStart;
-            break;
-          } else {
-            phaseStart += duration;
-            segIndex += dir;
-          }
+          if (idx === undefined) idx = first.i1; // safe fallback
         }
+        const marker = ensureMarker(trip.key);
+        marker.setPosition(points[idx]);
       };
 
       const step = () => {
-        const now = performance.now();
-        advanceTrain(trainStateRef.current.A, trainMarkersRef.current[0], now);
-        advanceTrain(trainStateRef.current.B, trainMarkersRef.current[1], now);
+        const now = nowISTms();
+
+        for (const trip of tripDefsRef.current) {
+          let moved = false;
+
+          // moving on a leg?
+          for (let i = 0; i < trip.legs.length; i++) {
+            const leg = trip.legs[i];
+            if (now >= leg.t1 && now <= leg.t2) {
+              const t = (now - leg.t1) / (leg.t2 - leg.t1);
+              const p1 = points[leg.i1];
+              const p2 = points[leg.i2];
+              ensureMarker(trip.key).setPosition(lerpPos(p1, p2, t));
+              moved = true;
+              break;
+            }
+          }
+
+          // idle (pre, between, or post service): show parked at the correct station
+          if (!moved) {
+            placeIdle(trip, now);
+          }
+        }
+
         rafRef.current = requestAnimationFrame(step);
       };
+
       rafRef.current = requestAnimationFrame(step);
     }
 
-    // Cleanup
+    // ---------- cleanup ----------
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
-      trainStateRef.current = null;
 
-      trainMarkersRef.current.forEach((m) => m.setMap(null));
-      trainMarkersRef.current = [];
+      for (const m of liveMarkersRef.current.values()) m.setMap(null);
+      liveMarkersRef.current.current = new Map(); // reset map holder
 
       markersRef.current.forEach((m) => m.setMap(null));
       markersRef.current = [];
@@ -151,7 +254,7 @@ export default function YellowLine({
         polylineRef.current = null;
       }
     };
-  }, [map, theme, showStations, fitOnMount, animateTrains]);
+  }, [map, theme, showStations, fitOnMount, animateTrains, timeOfDayOverride]);
 
   return null;
 }

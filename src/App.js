@@ -17,7 +17,7 @@ const subtleLightStyle = [
   // { featureType: "landscape", elementType: "all", stylers: [{ visibility: "on" }] },
   { featureType: "landscape.natural", elementType: "all", stylers: [{ visibility: "on" }, { color: "rgb(17, 221, 102)" }] },
   { featureType: "administrative.locality", elementType: "all", stylers: [{ visibility: "on" }] },
-  { featureType: "water", elementType: "all", stylers: [{ visibility: "on" }, { color: "rgb(17, 156, 221)" }] },
+  { featureType: "water", elementType: "all", stylers: [{ visibility: "on" }, { color: "#1997d1ff" }] },
 ];
 
 // Subtle dark theme
@@ -47,7 +47,7 @@ export default function App() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  const [filters, setFilters] = useState({ purple: true, yellow: true, green: true });
+  const [filters, setFilters] = useState({ purple: false, yellow: true, green: false });
   const [theme, setTheme] = useState("light");
   const [language, setLanguage] = useState("en");
   const [menuOpen, setMenuOpen] = useState(false);

@@ -36,6 +36,7 @@ export default function SidePanel({
       stop: "Stop",
       cancel: "Cancel",
       save: "Save",
+      arriving: "ARRIVING",
     },
     kn: {
       controls: "ನಿಯಂತ್ರಣಗಳು",
@@ -53,6 +54,7 @@ export default function SidePanel({
       stop: "ನಿಲ್ದಾಣ",
       cancel: "ರದ್ದುಮಾಡಿ",
       save: "ಉಳಿಸಿ",
+      arriving: "ಬರುತ್ತಿದೆ",
     },
     hi: {
       controls: "नियंत्रण",
@@ -70,6 +72,7 @@ export default function SidePanel({
       stop: "स्टॉप",
       cancel: "रद्द करें",
       save: "सेव",
+      arriving: "ARRIVING",
     },
   };
   const T = I18N[language] ?? I18N.en;
@@ -113,7 +116,6 @@ export default function SidePanel({
     green: "#16A34A",
   };
 
-  // Station lists from imported files
   const stopsByLine = {
     purple: PURPLE_STATIONS,
     yellow: YELLOW_STATIONS,
@@ -134,25 +136,93 @@ export default function SidePanel({
       setModalOpen(false);
       return;
     }
-
-    // Prevent duplicates (same line + stop)
     const exists = favorites.some(
       (f) => f.line === selectedLine && f.stop === selectedStop
     );
     if (exists) {
-      setModalOpen(false); // close modal if already added
+      setModalOpen(false);
       setSelectedStop("");
       return;
     }
-
     setFavorites([...favorites, { line: selectedLine, stop: selectedStop }]);
     setModalOpen(false);
     setSelectedStop("");
   };
 
-  const removeFavorite = (stop) => {
-    setFavorites(favorites.filter((f) => f.stop !== stop));
+  const removeFavorite = (favToRemove) => {
+    setFavorites(
+      favorites.filter((f) => !(f.line === favToRemove.line && f.stop === favToRemove.stop))
+    );
   };
+
+  // ===== ETA calculation (IST) =====
+  const [etas, setEtas] = useState({}); // key -> { toFirst: minutes|null, toLast: minutes|null, idx, firstName, lastName }
+
+  const IST_OFFSET_MIN = 330;
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  const hhmmssToMs = (t) => {
+    const [hh, mm, ss] = t.split(":").map((x) => parseInt(x, 10));
+    return ((hh * 60 + mm) * 60 + (ss || 0)) * 1000;
+  };
+
+  // ms since IST midnight
+  const nowWithinDayIST = () => {
+    const n = Date.now() + IST_OFFSET_MIN * 60 * 1000; // shift to IST timeline
+    const d = new Date(n);
+    return (
+      ((d.getUTCHours() * 60 + d.getUTCMinutes()) * 60 + d.getUTCSeconds()) * 1000 +
+      d.getUTCMilliseconds()
+    );
+  };
+
+  const nextEtaMinutes = (times) => {
+    if (!times || !times.length) return null;
+    const nowMs = nowWithinDayIST();
+    const list = times
+      .map((t) => (typeof t === "string" ? t : t.time))
+      .filter(Boolean)
+      .map(hhmmssToMs)
+      .sort((a, b) => a - b);
+
+    const idx = list.findIndex((ms) => ms >= nowMs);
+    const target = idx >= 0 ? list[idx] : list[0] + DAY_MS;
+    const etaMs = target - nowMs;
+    const mins = Math.max(0, Math.ceil(etaMs / 60000));
+    return mins;
+  };
+
+  // Build per-favorite ETAs toward each terminal:
+  // convention: upSchedule -> towards last station, downSchedule -> towards first station
+  useEffect(() => {
+    const compute = () => {
+      const result = {};
+      for (const fav of favorites) {
+        const stations = stopsByLine[fav.line] || [];
+        const station = stations.find((s) => s.name === fav.stop);
+        const key = `${fav.line}|${fav.stop}`;
+        if (!station || stations.length === 0) {
+          result[key] = null;
+          continue;
+        }
+
+        const firstName = stations[0].name;
+        const lastName = stations[stations.length - 1].name;
+        const idx = stations.findIndex((s) => s.name === fav.stop);
+
+        // towards last: use upSchedule
+        const toLast = nextEtaMinutes(station.upSchedule);
+        // towards first: use downSchedule
+        const toFirst = nextEtaMinutes(station.downSchedule);
+
+        result[key] = { toFirst, toLast, idx, firstName, lastName, line: fav.line, stop: fav.stop };
+      }
+      setEtas(result);
+    };
+    compute();
+    const id = setInterval(compute, 15000);
+    return () => clearInterval(id);
+  }, [favorites]);
 
   const panelStyle = {
     width: 260,
@@ -202,6 +272,28 @@ export default function SidePanel({
     cursor: "pointer",
   };
 
+  const etaRow = (labelText, minutes) => {
+    const txt =
+      minutes == null ? "--" : minutes < 2 ? T.arriving : `${minutes} min`;
+    return (
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 13,
+          whiteSpace: "nowrap",
+        }}
+      >
+        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
+          → {labelText}
+        </span>
+        <span style={{ fontWeight: 600, whiteSpace: "nowrap" }}>{txt}</span>
+      </div>
+    );
+  };
+
   return (
     <>
       <aside style={panelStyle}>
@@ -226,13 +318,7 @@ export default function SidePanel({
               {theme === "dark" ? (
                 // Sun
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-                  <circle
-                    cx="12"
-                    cy="12"
-                    r="4"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                  />
+                  <circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="2" />
                   <path
                     d="M12 2v3M12 19v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M2 12h3M19 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12"
                     stroke="currentColor"
@@ -299,11 +385,7 @@ export default function SidePanel({
           </label>
 
           <label style={{ ...label, marginTop: 10 }}>
-            <input
-              type="checkbox"
-              checked={areAllSelected}
-              onChange={onToggleAll}
-            />
+            <input type="checkbox" checked={areAllSelected} onChange={onToggleAll} />
             <span>{areAllSelected ? T.hideAll : T.showAll}</span>
           </label>
         </div>
@@ -320,47 +402,67 @@ export default function SidePanel({
         {/* Favourites */}
         <div style={section}>
           <strong>{T.favourites}</strong>
-          {favorites.length === 0 && (
-            <p style={{ margin: "8px 0" }}>{T.noFav}</p>
-          )}
+          {favorites.length === 0 && <p style={{ margin: "8px 0" }}>{T.noFav}</p>}
 
-          {favorites.map((fav, i) => (
-            <div
-              key={i}
-              style={{
-                background: theme === "dark" ? "#1e1e1e" : "#fff",   // dark bg support
-                padding: "10px",
-                marginTop: "10px",
-                marginBottom: "10px",
-                color: theme === "dark" ? "#fff" : "#111",
-                border: `1px solid ${lineColors[fav.line]}`,
-                boxShadow: `0 0 6px ${lineColors[fav.line]}`,
-                display: "flex",
-                flexDirection: "column",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
-                <span>{fav.stop}</span>
-                <button
-                  onClick={() => removeFavorite(fav.stop)}
-                  style={{
-                    background: "transparent",
-                    border: "none",
-                    color: theme === "dark" ? "#fff" : "#111",
-                    cursor: "pointer",
-                    fontSize: "16px",
-                  }}
-                >
-                  ×
-                </button>
+          {favorites.map((fav) => {
+            const key = `${fav.line}|${fav.stop}`;
+            const info = etas[key];
+            const col = lineColors[fav.line] || "#999";
+            const stations = stopsByLine[fav.line] || [];
+            const idx = info?.idx ?? stations.findIndex((s) => s.name === fav.stop);
+            const firstName = info?.firstName ?? (stations[0]?.name || "Terminal A");
+            const lastName = info?.lastName ?? (stations[stations.length - 1]?.name || "Terminal B");
+
+            // Determine which rows to show:
+            // - At first station: ONLY show towards last
+            // - At last station: ONLY show towards first
+            // - Middle: show both
+            const showToLast = idx > -1 && idx !== stations.length - 1;
+            const showToFirst = idx > 0;
+
+            return (
+              <div
+                key={key}
+                style={{
+                  background: theme === "dark" ? "#1e1e1e" : "#fff",
+                  padding: "10px",
+                  marginTop: "10px",
+                  marginBottom: "10px",
+                  color: theme === "dark" ? "#fff" : "#111",
+                  border: `1px solid ${col}`,
+                  boxShadow: `0 0 6px ${col}`,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                }}
+              >
+                {/* Header row */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontWeight: 600 }}>{fav.stop}</span>
+                  <button
+                    onClick={() => removeFavorite(fav)}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      color: theme === "dark" ? "#fff" : "#111",
+                      cursor: "pointer",
+                      fontSize: 16,
+                      lineHeight: 1,
+                    }}
+                    aria-label="Remove favourite"
+                  >
+                    ×
+                  </button>
+                </div>
+
+                {/* Direction ETAs */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 2 }}>
+                  {showToLast && etaRow(lastName, info?.toLast ?? null)}
+                  {showToFirst && etaRow(firstName, info?.toFirst ?? null)}
+                </div>
               </div>
-              <div style={{ marginTop: 4, fontSize: 13 }}>
-                ETA: -- min
-              </div>
-            </div>
-          ))}
+            );
+          })}
 
           {favorites.length < 5 && (
             <button
@@ -386,7 +488,7 @@ export default function SidePanel({
       {/* Modal */}
       {modalOpen && (
         <div
-          onClick={() => setModalOpen(false)} // 👈 clicking backdrop closes modal
+          onClick={() => setModalOpen(false)}
           style={{
             position: "fixed",
             top: 0,
@@ -401,14 +503,14 @@ export default function SidePanel({
           }}
         >
           <div
-            onClick={(e) => e.stopPropagation()} // 👈 prevent closing when clicking inside
+            onClick={(e) => e.stopPropagation()}
             style={{
               background: theme === "dark" ? "#1e1e1e" : "#fff",
               color: theme === "dark" ? "#fff" : "#111",
               padding: 20,
               borderRadius: 12,
               minWidth: 280,
-              position: "relative", // 👈 needed for cross positioning
+              position: "relative",
               boxShadow:
                 theme === "dark"
                   ? "0 0 12px rgba(255,255,255,0.1)"
@@ -452,9 +554,9 @@ export default function SidePanel({
                   color: theme === "dark" ? "#fff" : "#111",
                 }}
               >
-                <option value="purple">{T.purpleLine}</option>
-                <option value="yellow">{T.yellowLine}</option>
-                <option value="green">{T.greenLine}</option>
+                <option value="purple">Purple Line</option>
+                <option value="yellow">Yellow Line</option>
+                <option value="green">Green Line</option>
               </select>
             </label>
 
@@ -474,7 +576,7 @@ export default function SidePanel({
                 }}
               >
                 <option value="">-- Select --</option>
-                {stopsByLine[selectedLine].map((stop) => (
+                {(stopsByLine[selectedLine] || []).map((stop) => (
                   <option key={stop.name} value={stop.name}>
                     {getStationLabel(stop)}
                   </option>
