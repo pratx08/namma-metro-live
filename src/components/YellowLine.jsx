@@ -52,9 +52,51 @@ export default function YellowLine({
       strokeWeight: 2,
     };
     if (showStations) {
-      markersRef.current = points.map(
-        (pos) => new g.Marker({ position: pos, icon: stationDot, map, zIndex: 20 })
-      );
+      markersRef.current = stations.map((st, idx) => {
+        const marker = new g.Marker({
+          position: points[idx],
+          icon: stationDot,
+          map,
+          zIndex: 20,
+        });
+
+        // Create a custom label overlay
+        const labelDiv = document.createElement("div");
+        labelDiv.innerText = st.name || "";
+        labelDiv.style.background = "white";
+        labelDiv.style.padding = "2px 6px";
+        labelDiv.style.borderRadius = "4px";
+        labelDiv.style.fontSize = "11px";
+        labelDiv.style.fontWeight = "500";
+        labelDiv.style.color = isDark ? "#000000" : "#333333";
+        labelDiv.style.whiteSpace = "nowrap";
+        labelDiv.style.boxShadow = "0 1px 3px rgba(0,0,0,0.3)";
+
+        const labelOverlay = new g.OverlayView();
+        labelOverlay.onAdd = function () {
+          const panes = this.getPanes();
+          panes.overlayImage.appendChild(labelDiv);
+        };
+        labelOverlay.draw = function () {
+          const projection = this.getProjection();
+          const pos = projection.fromLatLngToDivPixel(
+            new g.LatLng(points[idx].lat, points[idx].lng)
+          );
+          if (pos) {
+            labelDiv.style.position = "absolute";
+            labelDiv.style.left = pos.x + "px";
+            labelDiv.style.top = pos.y - 20 + "px"; // place above the dot
+          }
+        };
+        labelOverlay.onRemove = function () {
+          if (labelDiv.parentNode) {
+            labelDiv.parentNode.removeChild(labelDiv);
+          }
+        };
+        labelOverlay.setMap(map);
+
+        return marker;
+      });
     }
 
     // ---------- line ----------
@@ -210,25 +252,87 @@ export default function YellowLine({
       });
 
       const ensureMarker = (key, trainId) => {
-        let m = liveMarkersRef.current.get(key);
-        if (!m) {
-          m = new g.Marker({
-            position: points[0],
-            icon: trainIcon,
-            map,
-            zIndex: 50,
-            label: {
-              text: trainId,
-              fontSize: "10px",
-              color: "#000",
-              fontWeight: "bold",
-            },
-          });
-          liveMarkersRef.current.set(key, m);
-        } else if (!m.getMap()) {
-          m.setMap(map);
+        let overlay = liveMarkersRef.current.get(key);
+
+        if (!overlay) {
+          const div = document.createElement("div");
+          div.className = "train-marker"; // use CSS for ripple
+          div.style.width = "24px";
+          div.style.height = "24px";
+          div.style.position = "absolute";
+          div.style.transform = "translate(-50%, -50%)"; // center on point
+
+          // (optional) train image inside
+          const img = document.createElement("img");
+          img.src = "/yellow-metro.jpg";
+          img.alt = trainId;
+          img.style.width = "24px";
+          img.style.height = "24px";
+          img.style.borderRadius = "50%";
+          img.style.display = "block";
+          img.style.position = "relative";
+          img.style.zIndex = "2";
+          div.appendChild(img);
+
+          // (optional) small label under the marker
+          const label = document.createElement("div");
+          label.textContent = trainId;
+          label.style.position = "absolute";
+          label.style.top = "26px";
+          label.style.left = "50%";
+          label.style.transform = "translateX(-50%)";
+          label.style.fontSize = "10px";
+          label.style.fontWeight = "bold";
+          label.style.color = "#000";
+          label.style.background = "rgba(255,255,255,0.85)";
+          label.style.padding = "1px 4px";
+          label.style.borderRadius = "3px";
+          label.style.boxShadow = "0 1px 2px rgba(0,0,0,0.2)";
+          div.appendChild(label);
+
+          // Build the overlay
+          const CustomOverlay = function () { };
+          CustomOverlay.prototype = new g.OverlayView();
+
+          const o = new CustomOverlay();
+          o.position = new g.LatLng(points[0].lat, points[0].lng);
+
+          o.onAdd = function () {
+            this.getPanes().overlayMouseTarget.appendChild(div);
+          };
+
+          o.draw = function () {
+            const projection = this.getProjection();
+            if (!projection || !this.position) return;
+            const p = projection.fromLatLngToDivPixel(this.position);
+            if (!p) return;
+            div.style.left = `${p.x}px`;
+            div.style.top = `${p.y}px`;
+          };
+
+          o.onRemove = function () {
+            if (div.parentNode) div.parentNode.removeChild(div);
+          };
+
+          // 🔧 Give the overlay a Marker-like API:
+          o.setPosition = function (latLngLiteral) {
+            this.position = new g.LatLng(latLngLiteral.lat, latLngLiteral.lng);
+            if (this.getMap()) {
+              // draw on next frame to keep animation smooth
+              requestAnimationFrame(() => this.draw());
+            }
+          };
+
+          o.setMap(map);
+          o.div = div;
+
+          overlay = o;
+          liveMarkersRef.current.set(key, overlay);
+        } else if (!overlay.getMap()) {
+          overlay.setMap(map);
         }
-        return m;
+
+        return overlay;
       };
 
       const placeIdle = (trip, now) => {
