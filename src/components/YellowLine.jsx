@@ -146,8 +146,30 @@ export default function YellowLine({
               for (let i = 0; i < events.length - 1; i++) {
                 const a = events[i];
                 const b = events[i + 1];
-                if (b.abs > a.abs) {
-                  legs.push({ i1: a.idx, i2: b.idx, t1: a.abs, t2: b.abs });
+                if (Math.abs(b.idx - a.idx) === 1 && b.abs > a.abs) {
+                  const DWELL = 15 * 1000; // 15 seconds dwell at station
+
+                  const travelDuration = (b.abs - a.abs) - DWELL;
+                  if (travelDuration > 0) {
+                    // Dwell leg: stay at station a.idx until dwell ends
+                    legs.push({
+                      i1: a.idx,
+                      i2: a.idx, // same station
+                      t1: a.abs,
+                      t2: a.abs + DWELL,
+                    });
+
+                    // Travel leg: move to next station in remaining time
+                    legs.push({
+                      i1: a.idx,
+                      i2: b.idx,
+                      t1: a.abs + DWELL,
+                      t2: b.abs,
+                    });
+                  } else {
+                    // Fallback: if dwell is longer than interval, just make direct leg
+                    legs.push({ i1: a.idx, i2: b.idx, t1: a.abs, t2: b.abs });
+                  }
                 }
               }
               if (legs.length) trips.push({ key, dir, trainId, legs });
