@@ -67,9 +67,10 @@ export default function SidePanel({
   // Responsive grid: 1 col on mobile, 2 cols on bigger
   const grid = {
     display: "grid",
-    gridTemplateColumns: "1fr",
+    gridTemplateColumns: window.innerWidth < 600 ? "1fr 1fr" : "1fr",
     gap: "10px",
   };
+
   if (window.innerWidth >= 600) {
     grid.gridTemplateColumns = "1fr 1fr";
     grid.justifyContent = "flex-start";

@@ -175,7 +175,7 @@ export default function Favorites({ theme = "light", language = "en" }) {
 	}, [favorites, stopsByLine]);
 
 	const etaRow = (labelText, minutes) => {
-		const txt = minutes == null ? "--" : minutes < 2 ? T.arriving : `${minutes} min`;
+		const txt = minutes == null ? "--" : minutes < 1 ? T.arriving : `${minutes} min`;
 		return (
 			<div
 				style={{
@@ -216,7 +216,22 @@ export default function Favorites({ theme = "light", language = "en" }) {
 			}}
 		>
 			{/* <strong>{T.favourites}</strong> */}
-			{favorites.length === 0 && <p style={{ margin: "8px 0" }}>{T.noFav}</p>}
+			{favorites.length === 0 && (
+				<div
+					style={{
+						flex: "0 0 180px",       // same base width as the cards
+						height: "100px",         // same height as the cards
+						display: "flex",
+						alignItems: "center",    // vertical center
+						justifyContent: "center",// horizontal center
+						fontSize: 14,
+						fontWeight: 500,
+						color: theme === "dark" ? "#ccc" : "#555",
+					}}
+				>
+					{T.noFav}
+				</div>
+			)}
 
 			{favorites.map((fav) => {
 				const key = `${fav.line}|${fav.stop}`;
@@ -237,7 +252,7 @@ export default function Favorites({ theme = "light", language = "en" }) {
 						style={{
 							flex: "0 0 180px",
 							height: "100px",
-							width: "250px"  ,         // ✅ fixed uniform height
+							width: "250px",         // ✅ fixed uniform height
 							background: theme === "dark" ? "#1e1e1e" : "#fff",
 							color: theme === "dark" ? "#fff" : "#111",
 							border: `2px solid ${col}`,
@@ -275,7 +290,16 @@ export default function Favorites({ theme = "light", language = "en" }) {
 						</div>
 
 						{/* Direction ETAs */}
-						<div style={{ fontSize: 13 }}>
+						<div
+							style={{
+								fontSize: 13,
+								marginTop: 8,        // push from top
+								marginBottom: 8,     // push from bottom
+								display: "flex",     // stack rows as flex items
+								flexDirection: "column",
+								gap: 6,              // ✅ space between the two rows
+							}}
+						>
 							{showToLast && etaRow(lastName, info?.toLast ?? null)}
 							{showToFirst && etaRow(firstName, info?.toFirst ?? null)}
 						</div>

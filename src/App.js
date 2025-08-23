@@ -30,7 +30,7 @@ export default function App() {
 
   const [theme, setTheme] = useState(() => localStorage.getItem("theme") || "light");
   const [language, setLanguage] = useState(() => localStorage.getItem("language") || "en");
-  const [setMenuOpen] = useState(false);
+  const [menuOption, setMenuOpen] = useState(false);
 
   useEffect(() => localStorage.setItem("theme", theme), [theme]);
   useEffect(() => localStorage.setItem("language", language), [language]);
@@ -55,6 +55,7 @@ export default function App() {
     );
 
   const mapCenter = useMemo(() => [ 77.60691661228209, 12.864834359992448], []);
+  const MAPTILER_KEY = "xlPHYNs3swcefiFlTNpo";
   const styleUrl = `https://api.maptiler.com/maps/streets-v2/style.json?key=${MAPTILER_KEY}`;
 
   return (

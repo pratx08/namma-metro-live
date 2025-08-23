@@ -107,22 +107,22 @@ export default function YellowLine({
           },
         });
 
-        map.addLayer({
-          id: "station-labels",
-          type: "symbol",
-          source: "stations",
-          layout: {
-            "text-field": ["get", "name"],
-            "text-size": 14,
-            "text-anchor": "center",
-            "text-offset": [0, 1],
-          },
-          paint: {
-            "text-color": "#000000",         // black text
-            "text-halo-color": "#ffffff",    // thin border
-            "text-halo-width": 1.5,
-          },
-        });
+        // map.addLayer({
+        //   id: "station-labels",
+        //   type: "symbol",
+        //   source: "stations",
+        //   layout: {
+        //     "text-field": ["get", "name"],
+        //     "text-size": 14,
+        //     "text-anchor": "center",
+        //     "text-offset": [0, 1],
+        //   },
+        //   paint: {
+        //     "text-color": "#000000",         // black text
+        //     "text-halo-color": "#ffffff",    // thin border
+        //     "text-halo-width": 1.5,
+        //   },
+        // });
       }
     };
 
@@ -162,11 +162,11 @@ export default function YellowLine({
       const buildTrips = () => {
         const upMap = new Map();
         const downMap = new Map();
-        const dedupePush = (map, key, idx, time) => {
-          const arr = map.get(key) || [];
+        const dedupePush = (mapM, key, idx, time) => {
+          const arr = mapM.get(key) || [];
           const sig = `${idx}|${time}`;
           if (!arr.some((e) => `${e.idx}|${e.time}` === sig)) arr.push({ idx, time });
-          map.set(key, arr);
+          mapM.set(key, arr);
         };
 
         stations.forEach((st, idx) => {
@@ -181,12 +181,16 @@ export default function YellowLine({
         });
 
         const midnight = istMidnightEpoch();
-        const finalize = (map, dir) => {
+        const DWELL_MS = 15000;       // <-- fixed 15s dwell
+        const MIN_TRAVEL_MS = 500;    // keep at least 0.5s of movement for very short hops
+
+        const finalize = (mapM, dir) => {
           const trips = [];
-          for (const [key, raw] of map.entries()) {
+          for (const [key, raw] of mapM.entries()) {
             const ordered = raw.slice().sort((a, b) =>
               dir === "UP" ? a.idx - b.idx : b.idx - a.idx
             );
+
             let dayOffset = 0;
             let prevWithin = null;
             const events = ordered.map(({ idx, time }) => {
@@ -200,20 +204,28 @@ export default function YellowLine({
             if (events.length >= 2) {
               const trainId = key.split("_").slice(2).join("_");
               const legs = [];
+
               for (let i = 0; i < events.length - 1; i++) {
                 const a = events[i];
                 const b = events[i + 1];
-                if (Math.abs(b.idx - a.idx) === 1 && b.abs > a.abs) {
-                  const DWELL = 15 * 1000;
-                  const travelDuration = b.abs - a.abs - DWELL;
-                  if (travelDuration > 0) {
-                    legs.push({ i1: a.idx, i2: a.idx, t1: a.abs, t2: a.abs + DWELL });
-                    legs.push({ i1: a.idx, i2: b.idx, t1: a.abs + DWELL, t2: b.abs });
-                  } else {
-                    legs.push({ i1: a.idx, i2: b.idx, t1: a.abs, t2: b.abs });
-                  }
+                if (Math.abs(b.idx - a.idx) !== 1 || b.abs <= a.abs) continue;
+
+                const hopMs = b.abs - a.abs;
+
+                // Try to dwell 15s, but ensure there's at least a tiny travel window
+                const dwell = Math.min(DWELL_MS, Math.max(0, hopMs - MIN_TRAVEL_MS));
+                const tDepart = a.abs + dwell;
+                const tArrive = b.abs;
+                const travelMs = Math.max(MIN_TRAVEL_MS, tArrive - tDepart);
+
+                // 1) wait at station A
+                if (dwell > 0) {
+                  legs.push({ i1: a.idx, i2: a.idx, t1: a.abs, t2: tDepart });
                 }
+                // 2) move from A -> B using the *remaining scheduled time*
+                legs.push({ i1: a.idx, i2: b.idx, t1: tDepart, t2: tArrive });
               }
+
               if (legs.length) trips.push({ key, dir, trainId, legs });
             }
           }
