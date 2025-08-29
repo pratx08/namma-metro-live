@@ -181,7 +181,7 @@ export default function YellowLine({
         });
 
         const midnight = istMidnightEpoch();
-        const DWELL_MS = 25000;       // <-- fixed 15s dwell
+        const DWELL_MS = 30000;       // <-- fixed 15s dwell
         const MIN_TRAVEL_MS = 500;    // keep at least 0.5s of movement for very short hops
 
         const finalize = (mapM, dir) => {
