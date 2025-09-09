@@ -106,27 +106,10 @@ export default function YellowLine({
             "text-halo-width": 1,
           },
         });
-
-        // map.addLayer({
-        //   id: "station-labels",
-        //   type: "symbol",
-        //   source: "stations",
-        //   layout: {
-        //     "text-field": ["get", "name"],
-        //     "text-size": 14,
-        //     "text-anchor": "center",
-        //     "text-offset": [0, 1],
-        //   },
-        //   paint: {
-        //     "text-color": "#000000",         // black text
-        //     "text-halo-color": "#ffffff",    // thin border
-        //     "text-halo-width": 1.5,
-        //   },
-        // });
       }
     };
 
-    // 🚨 Always call immediately (map is already loaded by now)
+    // Always call immediately (map is already loaded by now)
     if (map.isStyleLoaded()) {
       addLayers();
     } else {
@@ -181,8 +164,7 @@ export default function YellowLine({
         });
 
         const midnight = istMidnightEpoch();
-        const DWELL_MS = 30000;       // <-- fixed 15s dwell
-        const MIN_TRAVEL_MS = 500;    // keep at least 0.5s of movement for very short hops
+        const DWELL_MS = 15000;       // 15 seconds dwell time at stations
 
         const finalize = (mapM, dir) => {
           const trips = [];
@@ -205,25 +187,57 @@ export default function YellowLine({
               const trainId = key.split("_").slice(2).join("_");
               const legs = [];
 
-              for (let i = 0; i < events.length - 1; i++) {
-                const a = events[i];
-                const b = events[i + 1];
-                if (Math.abs(b.idx - a.idx) !== 1 || b.abs <= a.abs) continue;
+              for (let i = 0; i < events.length; i++) {
+                const curr = events[i];
+                const next = events[i + 1];
 
-                const hopMs = b.abs - a.abs;
-
-                // Try to dwell 15s, but ensure there's at least a tiny travel window
-                const dwell = Math.min(DWELL_MS, Math.max(0, hopMs - MIN_TRAVEL_MS));
-                const tDepart = a.abs + dwell;
-                const tArrive = b.abs;
-                const travelMs = Math.max(MIN_TRAVEL_MS, tArrive - tDepart);
-
-                // 1) wait at station A
-                if (dwell > 0) {
-                  legs.push({ i1: a.idx, i2: a.idx, t1: a.abs, t2: tDepart });
+                // For the last station, just dwell there
+                if (i === events.length - 1) {
+                  legs.push({
+                    i1: curr.idx,
+                    i2: curr.idx,
+                    t1: curr.abs,
+                    t2: curr.abs + DWELL_MS
+                  });
+                  break;
                 }
-                // 2) move from A -> B using the *remaining scheduled time*
-                legs.push({ i1: a.idx, i2: b.idx, t1: tDepart, t2: tArrive });
+
+                // Skip if not consecutive stations
+                if (Math.abs(next.idx - curr.idx) !== 1 || next.abs <= curr.abs) continue;
+
+                // The train arrives at curr.abs and must leave after dwelling
+                // It needs to arrive at next.abs
+                const departTime = curr.abs + DWELL_MS;
+                const arriveTime = next.abs;
+
+                // Only proceed if we have positive travel time
+                if (arriveTime > departTime) {
+                  // 1) Dwell at current station (arrive to depart)
+                  legs.push({
+                    i1: curr.idx,
+                    i2: curr.idx,
+                    t1: curr.abs,
+                    t2: departTime
+                  });
+
+                  // 2) Travel to next station (depart to arrive)
+                  legs.push({
+                    i1: curr.idx,
+                    i2: next.idx,
+                    t1: departTime,
+                    t2: arriveTime
+                  });
+                } else {
+                  // If schedule doesn't allow for dwell, skip or adjust
+                  console.warn(`Schedule too tight between stations ${curr.idx} and ${next.idx}`);
+                  // Just travel without dwell
+                  legs.push({
+                    i1: curr.idx,
+                    i2: next.idx,
+                    t1: curr.abs,
+                    t2: arriveTime
+                  });
+                }
               }
 
               if (legs.length) trips.push({ key, dir, trainId, legs });
@@ -253,7 +267,7 @@ export default function YellowLine({
 
           marker = new maplibregl.Marker({
             element: el,
-            anchor: "center",   // center the image on the coordinates
+            anchor: "center",
           }).setLngLat(points[0]).addTo(map);
 
           liveMarkersRef.current.set(key, marker);
