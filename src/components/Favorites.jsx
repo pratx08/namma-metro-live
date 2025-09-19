@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { GREEN_STATIONS } from "../stations/greenStations";
 import { PURPLE_STATIONS } from "../stations/purpleStations";
 import { YELLOW_STATIONS } from "../stations/yellowStations";
+import yellowData from "../stations/yellowSchedule.json";
 
 export default function Favorites({ theme = "light", language = "en" }) {
 	// --- i18n (subset needed here) ---
@@ -162,8 +163,19 @@ export default function Favorites({ theme = "light", language = "en" }) {
 				const lastName = stations[stations.length - 1].name;
 				const idx = stations.findIndex((s) => s.name === fav.stop);
 
-				const toLast = nextEtaMinutes(station.upSchedule); // towards last
-				const toFirst = nextEtaMinutes(station.downSchedule); // towards first
+				let toLast = null;
+				let toFirst = null;
+
+				if (fav.line === "yellow") {
+					const stationId = (station.station_id || "").trim().toUpperCase();
+					const yellowUp = yellowData?.["UP Line"]?.[stationId]?.trips || [];
+					const yellowDown = yellowData?.["DN Line"]?.[stationId ]?.trips || [];
+					toLast = nextEtaMinutes(yellowUp);
+					toFirst = nextEtaMinutes(yellowDown);
+				} else {
+					toLast = nextEtaMinutes(station.upSchedule);
+					toFirst = nextEtaMinutes(station.downSchedule);
+				}
 
 				result[key] = { toFirst, toLast, idx, firstName, lastName };
 			}

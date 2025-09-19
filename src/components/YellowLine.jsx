@@ -2,6 +2,7 @@
 import { useEffect, useRef } from "react";
 import maplibregl from "maplibre-gl";
 import { YELLOW_STATIONS } from "../stations/yellowStations";
+import yellowData from "../stations/yellowSchedule.json"; // your new schedule data
 
 export default function YellowLine({
   map,
@@ -19,15 +20,13 @@ export default function YellowLine({
     if (!map) return;
     const isDark = theme === "dark";
 
-    // ---------- stations/points ----------
-    const stations = (YELLOW_STATIONS || []).filter(
+    const stations = YELLOW_STATIONS.filter(
       (s) => typeof s.lat === "number" && typeof s.lng === "number"
     );
-    const points = stations.map(({ lat, lng }) => [lng, lat]); // [lng, lat]
+    const points = stations.map(({ lat, lng }) => [lng, lat]);
     const N = points.length;
     if (N === 0) return;
 
-    // Fit map to bounds once loaded
     if (fitOnMount) {
       const bounds = points.reduce(
         (b, p) => b.extend(p),
@@ -36,16 +35,13 @@ export default function YellowLine({
       map.fitBounds(bounds, { padding: 40 });
     }
 
-    // ---------- add layers (always re-add) ----------
     const addLayers = () => {
-      // remove if exists
       if (map.getLayer("yellow-line-layer")) map.removeLayer("yellow-line-layer");
       if (map.getSource("yellow-line")) map.removeSource("yellow-line");
       if (map.getLayer("yellow-stations-layer")) map.removeLayer("yellow-stations-layer");
       if (map.getLayer("yellow-stations-labels")) map.removeLayer("yellow-stations-labels");
       if (map.getSource("yellow-stations")) map.removeSource("yellow-stations");
 
-      // line
       if (N >= 2) {
         map.addSource("yellow-line", {
           type: "geojson",
@@ -64,7 +60,6 @@ export default function YellowLine({
         });
       }
 
-      // stations
       if (showStations) {
         map.addSource("yellow-stations", {
           type: "geojson",
@@ -109,14 +104,9 @@ export default function YellowLine({
       }
     };
 
-    // Always call immediately (map is already loaded by now)
-    if (map.isStyleLoaded()) {
-      addLayers();
-    } else {
-      map.once("styledata", addLayers);
-    }
+    if (map.isStyleLoaded()) addLayers();
+    else map.once("styledata", addLayers);
 
-    // ========== schedule-driven trains ==========
     if (animateTrains && N >= 2) {
       const DAY_MS = 24 * 60 * 60 * 1000;
       const IST_OFFSET_MS = 330 * 60 * 1000;
@@ -143,32 +133,35 @@ export default function YellowLine({
       };
 
       const buildTrips = () => {
-        const upMap = new Map();
-        const downMap = new Map();
-        const dedupePush = (mapM, key, idx, time) => {
-          const arr = mapM.get(key) || [];
-          const sig = `${idx}|${time}`;
-          if (!arr.some((e) => `${e.idx}|${e.time}` === sig)) arr.push({ idx, time });
-          mapM.set(key, arr);
+        const directionMap = {
+          UP: yellowData?.["UP Line"] || {},
+          DOWN: yellowData?.["DN Line"] || {},
         };
 
-        stations.forEach((st, idx) => {
-          (st.upSchedule || []).forEach((e) => {
-            const key = `UP_${e.tripNo}_${e.trainId}`;
-            dedupePush(upMap, key, idx, e.time);
-          });
-          (st.downSchedule || []).forEach((e) => {
-            const key = `DOWN_${e.tripNo}_${e.trainId}`;
-            dedupePush(downMap, key, idx, e.time);
-          });
-        });
+        const stationIdToIndex = new Map();
+        stations.forEach((s, idx) => stationIdToIndex.set(s.station_id, idx));
 
         const midnight = istMidnightEpoch();
-        const DWELL_MS = 15000;       // 15 seconds dwell time at stations
+        const allTrips = [];
 
-        const finalize = (mapM, dir) => {
-          const trips = [];
-          for (const [key, raw] of mapM.entries()) {
+        for (const dir of ["UP", "DOWN"]) {
+          const line = directionMap[dir];
+          const tripMap = new Map();
+
+          for (const [stationId, stationObj] of Object.entries(line)) {
+            const trips = stationObj.trips || [];
+            const idx = stationIdToIndex.get(stationId);
+            if (idx === undefined) continue;
+
+            for (const t of trips) {
+              const key = `${dir}_${t.tripNumber}_${t.trainId}`;
+              const arr = tripMap.get(key) || [];
+              arr.push({ idx, time: t.time });
+              tripMap.set(key, arr);
+            }
+          }
+
+          for (const [key, raw] of tripMap.entries()) {
             const ordered = raw.slice().sort((a, b) =>
               dir === "UP" ? a.idx - b.idx : b.idx - a.idx
             );
@@ -191,62 +184,30 @@ export default function YellowLine({
                 const curr = events[i];
                 const next = events[i + 1];
 
-                // For the last station, just dwell there
                 if (i === events.length - 1) {
-                  legs.push({
-                    i1: curr.idx,
-                    i2: curr.idx,
-                    t1: curr.abs,
-                    t2: curr.abs + DWELL_MS
-                  });
+                  legs.push({ i1: curr.idx, i2: curr.idx, t1: curr.abs, t2: curr.abs + 15000 });
                   break;
                 }
 
-                // Skip if not consecutive stations
                 if (Math.abs(next.idx - curr.idx) !== 1 || next.abs <= curr.abs) continue;
 
-                // The train arrives at curr.abs and must leave after dwelling
-                // It needs to arrive at next.abs
-                const departTime = curr.abs + DWELL_MS;
+                const departTime = curr.abs + 15000;
                 const arriveTime = next.abs;
 
-                // Only proceed if we have positive travel time
                 if (arriveTime > departTime) {
-                  // 1) Dwell at current station (arrive to depart)
-                  legs.push({
-                    i1: curr.idx,
-                    i2: curr.idx,
-                    t1: curr.abs,
-                    t2: departTime
-                  });
-
-                  // 2) Travel to next station (depart to arrive)
-                  legs.push({
-                    i1: curr.idx,
-                    i2: next.idx,
-                    t1: departTime,
-                    t2: arriveTime
-                  });
+                  legs.push({ i1: curr.idx, i2: curr.idx, t1: curr.abs, t2: departTime });
+                  legs.push({ i1: curr.idx, i2: next.idx, t1: departTime, t2: arriveTime });
                 } else {
-                  // If schedule doesn't allow for dwell, skip or adjust
-                  console.warn(`Schedule too tight between stations ${curr.idx} and ${next.idx}`);
-                  // Just travel without dwell
-                  legs.push({
-                    i1: curr.idx,
-                    i2: next.idx,
-                    t1: curr.abs,
-                    t2: arriveTime
-                  });
+                  legs.push({ i1: curr.idx, i2: next.idx, t1: curr.abs, t2: arriveTime });
                 }
               }
 
-              if (legs.length) trips.push({ key, dir, trainId, legs });
+              if (legs.length) allTrips.push({ key, dir, trainId, legs });
             }
           }
-          return trips;
-        };
+        }
 
-        return [...finalize(upMap, "UP"), ...finalize(downMap, "DOWN")];
+        return allTrips;
       };
 
       tripDefsRef.current = buildTrips();
@@ -258,18 +219,13 @@ export default function YellowLine({
         let marker = liveMarkersRef.current.get(key);
         if (!marker) {
           const el = document.createElement("img");
-          el.src = "/yellow-metro.jpg";  // image in public/
-          el.style.width = "28px";       // adjust size as needed
+          el.src = "/yellow-metro.jpg";
+          el.style.width = "28px";
           el.style.height = "28px";
           el.style.objectFit = "contain";
-          el.style.borderRadius = "50%"; // optional, if you want circular crop
-          el.style.boxShadow = "0 0 4px rgba(0,0,0,0.4)"; // optional, makes it pop
-
-          marker = new maplibregl.Marker({
-            element: el,
-            anchor: "center",
-          }).setLngLat(points[0]).addTo(map);
-
+          el.style.borderRadius = "50%";
+          el.style.boxShadow = "0 0 4px rgba(0,0,0,0.4)";
+          marker = new maplibregl.Marker({ element: el, anchor: "center" }).setLngLat(points[0]).addTo(map);
           liveMarkersRef.current.set(key, marker);
         }
         return marker;
@@ -282,12 +238,14 @@ export default function YellowLine({
           const lastLeg = trip.legs[trip.legs.length - 1];
           if (now < firstLeg.t1 || now > lastLeg.t2) {
             const marker = liveMarkersRef.current.get(trip.key);
-            if (marker) marker.remove();
+            if (marker) {
+              marker.remove();
+              liveMarkersRef.current.delete(trip.key); // ✅ important
+            }
             continue;
           }
           let moved = false;
-          for (let i = 0; i < trip.legs.length; i++) {
-            const leg = trip.legs[i];
+          for (const leg of trip.legs) {
             if (now >= leg.t1 && now <= leg.t2) {
               const t = (now - leg.t1) / (leg.t2 - leg.t1);
               const p1 = points[leg.i1];
@@ -297,8 +255,13 @@ export default function YellowLine({
               break;
             }
           }
+
           if (!moved) {
-            ensureMarker(trip.key, trip.trainId).setLngLat(points[firstLeg.i1]);
+            const marker = liveMarkersRef.current.get(trip.key);
+            if (marker) {
+              marker.remove();
+              liveMarkersRef.current.delete(trip.key);
+            }
           }
         }
         rafRef.current = requestAnimationFrame(step);
@@ -306,7 +269,6 @@ export default function YellowLine({
       step();
     }
 
-    // cleanup
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       for (const marker of liveMarkersRef.current.values()) marker.remove();
